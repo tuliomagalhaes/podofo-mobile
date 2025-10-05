@@ -1,0 +1,4 @@
+.DS_Store
+PoDoFo.xcframework/
+build-iphoneos/
+build-iphonesimulator/

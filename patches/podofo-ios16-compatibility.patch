@@ -1,0 +1,165 @@
+diff --git a/src/podofo/private/PdfDeclarationsPrivate.cpp b/src/podofo/private/PdfDeclarationsPrivate.cpp
+index 90be09f2..44f6e510 100644
+--- a/src/podofo/private/PdfDeclarationsPrivate.cpp
++++ b/src/podofo/private/PdfDeclarationsPrivate.cpp
+@@ -7,6 +7,8 @@
+ #include "PdfDeclarationsPrivate.h"
+ 
+ #include <regex>
++#include <sstream>
++#include <cstring>
+ #include <podofo/private/utfcpp_extensions.h>
+ 
+ #include <podofo/auxiliary/InputStream.h>
+@@ -70,12 +72,47 @@ static VersionIdentity s_PdfVersions[] = {
+     { "2.0"_n, PdfVersion::V2_0 },
+ };
+ 
++// Local iOS-compatible to_chars wrapper
++namespace {
++    struct local_to_chars_result {
++        char* ptr;
++        std::errc ec;
++    };
++    
++    template<typename T>
++    local_to_chars_result local_to_chars(char* first, char* last, T value) noexcept {
++#if defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && __IPHONE_OS_VERSION_MIN_REQUIRED < 260000
++        // iOS 16 and earlier - use stringstream fallback
++        try {
++            std::ostringstream oss;
++            oss << value;
++            std::string str = oss.str();
++            size_t len = str.length();
++            size_t available = last - first;
++            
++            if (len > available) {
++                return { last, std::errc::value_too_large };
++            }
++            
++            std::memcpy(first, str.data(), len);
++            return { first + len, std::errc{} };
++        } catch (...) {
++            return { first, std::errc::invalid_argument };
++        }
++#else
++        // iOS 26+ or other platforms - use standard to_chars
++        auto res = std::to_chars(first, last, value);
++        return { res.ptr, res.ec };
++#endif
++    }
++}
++
+ template<typename TInt, class = typename std::enable_if_t<std::is_integral_v<TInt>>>
+ void formatTo(string& str, TInt value)
+ {
+     str.clear();
+     array<char, numeric_limits<TInt>::digits10> arr;
+-    auto res = std::to_chars(arr.data(), arr.data() + arr.size(), value);
++    auto res = local_to_chars(arr.data(), arr.data() + arr.size(), value);
+     str.append(arr.data(), res.ptr - arr.data());
+ }
+ 
+diff --git a/src/podofo/private/PdfDeclarationsPrivate.h b/src/podofo/private/PdfDeclarationsPrivate.h
+index 14ddea3c..5d5a56b9 100644
+--- a/src/podofo/private/PdfDeclarationsPrivate.h
++++ b/src/podofo/private/PdfDeclarationsPrivate.h
+@@ -22,6 +22,8 @@
+ #include <limits>
+ #include <algorithm>
+ #include <iostream>
++#include <sstream>
++#include <iomanip>
+ 
+ #include "Format.h"
+ #include "numbers_compat.h"
+@@ -365,10 +367,79 @@ namespace utls
+ 
+     void FormatTo(std::string& str, double value, unsigned short precision);
+ 
++    // Local iOS-compatible from_chars wrappers
++    namespace {
++        struct local_from_chars_result {
++            const char* ptr;
++            std::errc ec;
++        };
++        
++        // For integral types
++        template<typename T>
++        typename std::enable_if_t<std::is_integral_v<T>, local_from_chars_result>
++        local_from_chars(const char* first, const char* last, T& value, int base = 10) noexcept {
++#if defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && __IPHONE_OS_VERSION_MIN_REQUIRED < 260000
++            // iOS 16 and earlier - use stringstream fallback
++            try {
++                std::string str(first, last);
++                std::istringstream iss(str);
++                if (base == 16) {
++                    iss >> std::hex >> value;
++                } else {
++                    iss >> value;
++                }
++                
++                if (iss.fail() || !iss.eof()) {
++                    return { first, std::errc::invalid_argument };
++                }
++                return { last, std::errc{} };
++            } catch (...) {
++                return { first, std::errc::invalid_argument };
++            }
++#else
++            // iOS 26+ or other platforms - use standard from_chars
++            auto res = std::from_chars(first, last, value, base);
++            return { res.ptr, res.ec };
++#endif
++        }
++        
++        // For floating-point types
++        template<typename T>
++        typename std::enable_if_t<std::is_floating_point_v<T>, local_from_chars_result>
++        local_from_chars(const char* first, const char* last, T& value, std::chars_format fmt = std::chars_format::fixed) noexcept {
++#if defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && __IPHONE_OS_VERSION_MIN_REQUIRED < 260000
++            // iOS 16 and earlier - use stringstream fallback
++            try {
++                std::string str(first, last);
++                std::istringstream iss(str);
++                
++                if (fmt == std::chars_format::scientific) {
++                    iss >> std::scientific >> value;
++                } else if (fmt == std::chars_format::fixed) {
++                    iss >> std::fixed >> value;
++                } else {
++                    iss >> value;
++                }
++                
++                if (iss.fail() || !iss.eof()) {
++                    return { first, std::errc::invalid_argument };
++                }
++                return { last, std::errc{} };
++            } catch (...) {
++                return { first, std::errc::invalid_argument };
++            }
++#else
++            // iOS 26+ or other platforms - use standard from_chars
++            auto res = std::from_chars(first, last, value, fmt);
++            return { res.ptr, res.ec };
++#endif
++        }
++    }
++
+     template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
+     inline bool TryParse(const std::string_view& str, T& val, int base = 10)
+     {
+-        if (std::from_chars(str.data(), str.data() + str.size(), val, base).ec == std::errc())
++        if (local_from_chars(str.data(), str.data() + str.size(), val, base).ec == std::errc())
+             return true;
+         else
+             return false;
+@@ -377,7 +448,7 @@ namespace utls
+     template <typename T, typename = std::enable_if_t<std::is_floating_point_v<T>>>
+     inline bool TryParse(const std::string_view& str, T& val, std::chars_format fmt = std::chars_format::fixed)
+     {
+-        if (std::from_chars(str.data(), str.data() + str.size(), val, fmt).ec == std::errc())
++        if (local_from_chars(str.data(), str.data() + str.size(), val, fmt).ec == std::errc())
+             return true;
+         else
+             return false;
