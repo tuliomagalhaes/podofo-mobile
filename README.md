@@ -18,8 +18,7 @@ The build process automatically compiles these libraries for iOS:
 1. **OpenSSL 1.1.1w** - Cryptographic library
 2. **FreeType 2.13.2** - Font rendering library  
 3. **LibXML2 2.12.9** - XML parsing library
-4. **Fontconfig 2.15.0** - Font configuration library
-5. **PoDoFo 1.0.2** - PDF manipulation library (with iOS compatibility patches)
+4. **PoDoFo 1.1.0** - PDF manipulation library, pinned to upstream commit `712fb0e80e0e9404525d8db54fa0baa4ae469963`
 
 ## ⚡ Quick Start
 
@@ -34,7 +33,7 @@ The build process automatically compiles these libraries for iOS:
 
 ```bash
 # Simple one-command build
-./build-ios-complete.sh
+./run-ios-build.sh
 ```
 
 This single script will:
@@ -42,7 +41,8 @@ This single script will:
 - Apply necessary iOS compatibility patches
 - Configure and build all dependencies
 - Compile PoDoFo with proper linking
-- Create a ready-to-use static library
+- Create a device arm64 and universal simulator (arm64 + x86_64) XCFramework
+- Verify source, patch, architecture, header, and archive provenance
 
 ## 🔧 Manual CMake Build
 
@@ -58,6 +58,58 @@ cmake .. -DCMAKE_TOOLCHAIN_FILE=../ios.toolchain.cmake
 # Build everything
 cmake --build . --target all-ios --parallel
 ```
+
+## Reproducibility and release evidence
+
+All upstream packages are downloaded from fixed release archives with SHA-256
+verification. PoDoFo 1.1.0 is fetched from its official archive and records
+both its checksum and immutable upstream Git commit in the output manifest.
+The old 1.0.2 `podofo-ios16-compatibility.patch` is retained for history but is
+not applied: 1.1.0 includes upstream Apple `charconv` compatibility.
+
+Each build writes the following ignored release artifacts:
+
+- `artifacts/PoDoFo-1.1.0.xcframework`
+- `artifacts/podofo-ios-1.1.0-provenance.json`
+- `artifacts/podofo-ios-1.1.0-controlled-evidence.json`
+- `artifacts/podofo-ios-1.1.0-corresponding-source.tar.gz`
+- `artifacts/podofo-ios-1.1.0-patches.tar.gz`
+- `artifacts/notices/*.txt`
+
+The controlled evidence record (schema version 2) records the immutable PoDoFo
+revision, final archive and complete XCFramework-tree hashes, exact
+`Info.plist` slice metadata, architectures, and the observed Mach-O platform
+and minimum OS records. Verification fails unless device objects are iOS
+platform 2 at 16.3 and simulator objects are platform 7 at 16.3. The source
+and patch bundles use sorted paths with normalized archive metadata. Builds
+intentionally refuse to overwrite an existing release XCFramework so a
+recorded artifact is never silently replaced.
+
+To stage the iOS-owned portion of the fixed controlled-builder v2 layout after
+a build, run:
+
+```bash
+./scripts/assemble-ios-controlled-fragment.sh
+```
+
+For isolated validation, `IOS_PODOFO_XCFRAMEWORK=/absolute/path` may select an
+already-built XCFramework without replacing the ignored default artifact.
+
+It creates `artifacts/controlled-builder-ios-fragment-v2` with fixed-path
+bundle candidates below `payload/` and iOS-only source, patch, build, and
+legacy-provenance records below `support/`.
+Only reviewed contents below `payload/` may be copied into a complete bundle;
+the fragment manifest and support records are inputs to the release owner, not
+importer payload. The fragment intentionally has no root
+`controlled-builder-manifest.env`: Android's four ABI libraries/headers,
+libpng/zlib records, and the independently built `PdfTools.xcframework` are
+required before a complete importer bundle can truthfully be assembled.
+The iOS build uses FreeType's immutable GitHub tag archive (`.tar.gz`), while
+the importer contract currently requires the Savannah `.tar.xz`; therefore
+the fragment keeps the exact iOS FreeType input below `support/source/` and
+explicitly leaves the contract's `source/freetype-2.13.2.tar.xz` unresolved.
+This fragment supplies build evidence and never grants project-license or
+release approval.
 
 ## 📋 Advanced Configuration
 
@@ -81,7 +133,7 @@ After successful compilation:
 ```
 build/
 ├── target/
-│   ├── libpodofo.a           # Main static library (ready to use)
+│   ├── libpodofo.a           # PoDoFo and its static third-party dependencies
 │   └── include/              # All headers organized
 ├── install/                  # Individual dependency libraries
 │   ├── openssl/
@@ -141,15 +193,16 @@ The build system automatically applies patches to fix iOS compatibility:
 
 ### Current Patches
 
-- **`patches/podofo.patch`**: Comprehensive iOS compatibility fixes for PoDoFo
-  - Fixes `chars_format::` namespace issues (ensures `std::chars_format::` is used)
-  - Ensures compatibility with iOS 16.3+ standard library
+- **`patches/patch_freetype_ios.cmake`**: verified simulator-arm64 FreeType CMake fixes
+- **`patches/patch_podofo_sdk_headers.cmake`**: verified SDK include ordering and optional dependency fixes
+- **`patches/podofo-ios16-compatibility.patch`**: historical 1.0.2 patch; intentionally not applied to PoDoFo 1.1.0
 
 ### Adding New Patches
 
 1. Make changes to source in `build/external/podofo/`
-2. Create patch: `git diff > patches/podofo.patch`
-3. The patch is automatically applied via the `apply-podofo-patches` target in CMakeLists.txt
+2. Create a patch or CMake patch script under `patches/`.
+3. Make its preconditions and post-application verification fail hard, add its
+   SHA-256 to the generated manifest, and document whether it applies to 1.1.0.
 
 ## 🏗️ Architecture Details
 
@@ -158,6 +211,10 @@ The build system automatically applies patches to fix iOS compatibility:
 - **Build Configuration**: Release with optimizations
 - **C++ Standard**: C++17 compatible
 - **Linking**: Static libraries only (no shared libraries for iOS)
+
+The generated `libpodofo.a` includes PoDoFo, OpenSSL, FreeType, and libxml2.
+Consumers must also link Apple's SDK `z` and `iconv` libraries, which provide
+the platform implementations used by the PDF Flate filter and libxml2.
 
 ## 🔍 Troubleshooting
 
@@ -197,10 +254,11 @@ cmake build
 
 ```
 ├── CMakeLists.txt              # Main unified build configuration
-├── build-ios-complete.sh       # Simple build script
+├── run-ios-build.sh            # Reproducible release build script
 ├── ios.toolchain.cmake         # iOS CMake toolchain
 ├── patches/                    # Git patches for iOS compatibility
-│   └── podofo-tokenizer.patch # PoDoFo iOS compatibility fixes
+│   └── patch_*.cmake           # Verified source transformations
+├── scripts/                    # Provenance generation and artifact verification
 └── README.md                   # This documentation
 ```
 

@@ -1,0 +1,15 @@
+--- a/Configurations/15-android.conf
++++ b/Configurations/15-android.conf
+@@ -113,7 +113,11 @@
+                     $cflags .= " -target $tridefault "
+                             .  "-gcc-toolchain \$($ndk_var)/toolchains"
+                             .  "/$tritools-4.9/prebuilt/$host";
+                     $user{CC} = "clang" if ($user{CC} !~ m|clang|);
+                 } else {
+-                    $user{CC} = "$tridefault$api-clang";
++                    # NDK 27 keeps only API-suffixed shell wrappers. Invoke
++                    # the real clang driver with an explicit Android target
++                    # so OpenSSL's compiler probes and Makefile use the same
++                    # non-wrapper command.
++                    $user{CC} = "clang --target=$tridefault$api";
+                 }

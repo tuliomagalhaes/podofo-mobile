@@ -1,7 +1,14 @@
 # iOS CMake Toolchain File
 # This file configures CMake for iOS cross-compilation
 
-set(CMAKE_SYSTEM_NAME iOS)
+# CMake's built-in iOS platform module assumes a physical device.  Treat the
+# simulator as Darwin with an explicit simulator SDK so ARM64 simulators do
+# not accidentally receive device object files.
+if(IOS_PLATFORM MATCHES "SIMULATOR")
+    set(CMAKE_SYSTEM_NAME Darwin)
+else()
+    set(CMAKE_SYSTEM_NAME iOS)
+endif()
 set(CMAKE_SYSTEM_VERSION 16.3)
 set(CMAKE_CROSSCOMPILING TRUE)
 
@@ -22,12 +29,14 @@ execute_process(
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
-    set(CMAKE_OSX_SYSROOT "${XCODE_DEVELOPER_DIR}/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk")
+if(IOS_PLATFORM MATCHES "SIMULATOR" OR CMAKE_OSX_ARCHITECTURES MATCHES "x86_64")
+    execute_process(COMMAND xcrun --sdk iphonesimulator --show-sdk-path OUTPUT_VARIABLE CMAKE_OSX_SYSROOT OUTPUT_STRIP_TRAILING_WHITESPACE)
     set(IOS_PLATFORM "SIMULATOR")
 else()
-    set(CMAKE_OSX_SYSROOT "${XCODE_DEVELOPER_DIR}/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk")
-    set(IOS_PLATFORM "DEVICE")
+    execute_process(COMMAND xcrun --sdk iphoneos --show-sdk-path OUTPUT_VARIABLE CMAKE_OSX_SYSROOT OUTPUT_STRIP_TRAILING_WHITESPACE)
+    # Keep FreeType's documented device selector. The parent build uses OS
+    # for device slices and SIMULATOR/SIMULATOR64 for simulator slices.
+    set(IOS_PLATFORM "OS")
 endif()
 
 # Set compiler and linker
@@ -44,8 +53,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Disable bitcode for simplicity
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mios-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mios-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET} -std=c++17")
+if(IOS_PLATFORM MATCHES "SIMULATOR")
+    set(IOS_DEPLOYMENT_FLAG "-mios-simulator-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+else()
+    set(IOS_DEPLOYMENT_FLAG "-miphoneos-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+endif()
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${IOS_DEPLOYMENT_FLAG}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${IOS_DEPLOYMENT_FLAG} -std=c++17")
 
 # Set the find root path mode
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
